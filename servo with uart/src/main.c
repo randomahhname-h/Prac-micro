@@ -83,14 +83,14 @@ void pwm_init(void) {
     ICR1 = 39999; 
     
     // Start at 0 degrees (1ms pulse = 2000 ticks)
-    OCR1A = 2000; 
+    OCR1A = 1000; 
 }
 
 void set_servo(int angle) {
     // A 0 degree angle requires a 1ms pulse (2000 ticks)
     // A 180 degree angle requires a 2ms pulse (4000 ticks)
-    // We map 0-180 mathematically into the 2000-4000 tick range.
-    long ticks = 2000 + ((long)angle * 2000) / 180;
+    // We map 0-180 mathematically into the 1000-4000 tick range.
+    long ticks = 1000 + ((long)angle * 3999) / 180;
     
     // Loading the ticks into OCR1A immediately changes the PWM pulse width
     OCR1A = ticks;
