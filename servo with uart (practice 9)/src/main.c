@@ -87,8 +87,7 @@ void pwm_init(void) {
 }
 
 void set_servo(int angle) {
-    // A 0 degree angle requires a 1ms pulse (2000 ticks)
-    // A 180 degree angle requires a 2ms pulse (4000 ticks)
+
     // We map 0-180 mathematically into the 1000-4000 tick range.
     long ticks = 1000 + ((long)angle * 3999) / 180;
     

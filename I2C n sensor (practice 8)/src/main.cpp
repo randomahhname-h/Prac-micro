@@ -2,35 +2,19 @@
 #include <avr/io.h>
 
 /*
- * ============================================================
- * PRACTICE 8: I2C AND SENSOR
- * ATmega328P + AHT20
- *
- * NO Wire.h
- * NO I2C LIBRARY
- *
  * I2C:
  *   PC4 / A4 = SDA
  *   PC5 / A5 = SCL
  *
  * AHT20:
  *   7-bit I2C Address = 0x38
- * ============================================================
  */
 
 #define AHT20_ADDR 0x38
 
-// ------------------------------------------------------------
-// I2C INITIALIZATION
-// ------------------------------------------------------------
-
 void i2c_init(void)
 {
     /*
-     * ATmega328P clock = 16 MHz
-     * I2C clock = 100 kHz
-     *
-     * Formula:
      *
      * SCL = F_CPU / (16 + 2*TWBR*4^TWPS)
      *
@@ -44,11 +28,6 @@ void i2c_init(void)
     TWCR = (1 << TWEN);       // Enable TWI
 }
 
-
-// ------------------------------------------------------------
-// I2C START
-// ------------------------------------------------------------
-
 void i2c_start(void)
 {
     TWCR = (1 << TWINT) |
@@ -59,10 +38,6 @@ void i2c_start(void)
     while (!(TWCR & (1 << TWINT)));
 }
 
-
-// ------------------------------------------------------------
-// I2C WRITE
-// ------------------------------------------------------------
 
 void i2c_write(uint8_t data)
 {
@@ -77,11 +52,6 @@ void i2c_write(uint8_t data)
     while (!(TWCR & (1 << TWINT)));
 }
 
-
-// ------------------------------------------------------------
-// I2C READ WITH ACK
-// ------------------------------------------------------------
-
 uint8_t i2c_read_ack(void)
 {
     TWCR = (1 << TWINT) |
@@ -94,11 +64,6 @@ uint8_t i2c_read_ack(void)
     return TWDR;
 }
 
-
-// ------------------------------------------------------------
-// I2C READ WITH NACK
-// ------------------------------------------------------------
-
 uint8_t i2c_read_nack(void)
 {
     TWCR = (1 << TWINT) |
@@ -110,11 +75,6 @@ uint8_t i2c_read_nack(void)
     return TWDR;
 }
 
-
-// ------------------------------------------------------------
-// I2C STOP
-// ------------------------------------------------------------
-
 void i2c_stop(void)
 {
     TWCR = (1 << TWINT) |
@@ -124,16 +84,6 @@ void i2c_stop(void)
     // Small delay to make sure STOP is completed
     delayMicroseconds(10);
 }
-
-
-// ============================================================
-// AHT20 FUNCTIONS
-// ============================================================
-
-
-// ------------------------------------------------------------
-// AHT20 INITIALIZATION
-// ------------------------------------------------------------
 
 void AHT20_init(void)
 {
@@ -163,11 +113,6 @@ void AHT20_init(void)
     delay(10);
 }
 
-
-// ------------------------------------------------------------
-// START AHT20 MEASUREMENT
-// ------------------------------------------------------------
-
 void AHT20_start_measurement(void)
 {
     /*
@@ -194,11 +139,6 @@ void AHT20_start_measurement(void)
     i2c_stop();
 }
 
-
-// ------------------------------------------------------------
-// READ AHT20 DATA
-// ------------------------------------------------------------
-
 void AHT20_read_data(float *temperature, float *humidity)
 {
     uint8_t data[7];
@@ -210,7 +150,6 @@ void AHT20_read_data(float *temperature, float *humidity)
 
 
     /*
-     * ============================================
      * READ 7 BYTES
      *
      * START
@@ -223,7 +162,6 @@ void AHT20_read_data(float *temperature, float *humidity)
      * DATA5 -> ACK
      * DATA6 -> NACK
      * STOP
-     * ============================================
      */
 
     i2c_start();
@@ -244,13 +182,6 @@ void AHT20_read_data(float *temperature, float *humidity)
     data[6] = i2c_read_nack();
 
     i2c_stop();
-
-
-    /*
-     * ============================================
-     * CONVERT RAW DATA
-     * ============================================
-     */
 
     // 20-bit raw humidity
     uint32_t raw_humidity;
@@ -290,16 +221,8 @@ void AHT20_read_data(float *temperature, float *humidity)
         ((float)raw_temperature * 200.0) / 1048576.0 - 50.0;
 }
 
-
-// ============================================================
-// SETUP
-// ============================================================
-
 void setup()
 {
-    /*
-     * Start Serial Monitor
-     */
     Serial.begin(9600);
 
     delay(1000);
@@ -310,18 +233,10 @@ void setup()
     Serial.println("ATmega328P");
     Serial.println("================================");
 
-
-    /*
-     * Initialize I2C
-     */
     i2c_init();
 
     Serial.println("I2C initialized");
 
-
-    /*
-     * Initialize AHT20
-     */
     AHT20_init();
 
     Serial.println("AHT20 initialized");
@@ -329,32 +244,15 @@ void setup()
     Serial.println();
 }
 
-
-// ============================================================
-// LOOP
-// ============================================================
-
 void loop()
 {
     float temperature;
     float humidity;
 
-
-    /*
-     * Start measurement
-     */
     AHT20_start_measurement();
 
-
-    /*
-     * Read sensor
-     */
     AHT20_read_data(&temperature, &humidity);
 
-
-    /*
-     * Display result
-     */
     Serial.print("Temperature: ");
     Serial.print(temperature, 2);
     Serial.println(" C");
@@ -363,12 +261,7 @@ void loop()
     Serial.print(humidity, 2);
     Serial.println(" %");
 
-
     Serial.println("----------------------------");
 
-
-    /*
-     * Wait 1 second
-     */
     delay(1000);
 }
