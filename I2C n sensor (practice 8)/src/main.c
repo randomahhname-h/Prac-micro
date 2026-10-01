@@ -1,30 +1,37 @@
+
 #include <avr/io.h>
 #include <util/delay.h>
-#include <stdio.h>
+#include <stdlib.h>      // Required for dtostrf()
 
+// AHT20 7-bit I2C Address
 #define AHT20_ADDR 0x38 
 
-/* UART Configuration for Serial Monitor Output */
+/* UART Configuration */
 #define BAUD 9600
 #define BRC ((F_CPU/16/BAUD) - 1)
 
 void uart_init(void) {
     UBRR0H = (BRC >> 8);
     UBRR0L = BRC;
-    UCSR0B = (1 << TXEN0);                  // Enable Transmitter (TX)
-    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00); // 8-bit data frame
+    
+    // We only need the Transmitter (TXEN0) enabled for this project
+    UCSR0B = (1 << TXEN0); 
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00); // 8-bit data format
 }
 
-// Custom putchar function to link with printf
-int uart_putchar(char c, FILE *stream) {
-    if (c == '\n') uart_putchar('\r', stream);
-    while (!(UCSR0A & (1 << UDRE0)));       // Wait until buffer is empty
-    UDR0 = c;
-    return 0;
-}
+void uart_print(const char* str) {
+    while (*str) {
+        // Automatically add carriage return (\r) before newline (\n) 
+        // for proper formatting in the Serial Monitor
+        if (*str == '\n') {
+            while (!(UCSR0A & (1 << UDRE0)));
+            UDR0 = '\r'; 
+        }
 
-// Setup stdout to use our custom UART putchar
-FILE uart_output = FDEV_SETUP_STREAM(uart_putchar, NULL, _FDEV_SETUP_WRITE);
+        while (!(UCSR0A & (1 << UDRE0))); // Wait for buffer to be empty
+        UDR0 = *str++;                    // Send character and increment pointer
+    }
+}
 
 /* I2C Functions */
 void i2c_init(void) {
@@ -118,28 +125,41 @@ void AHT20_read_data(float *temperature, float *humidity) {
 int main(void) {
     // System setup
     uart_init();
-    stdout = &uart_output; 
-
+    
     _delay_ms(1000);
 
     i2c_init();
-    printf("I2C initialized\n");
+    uart_print("I2C initialized\n");
 
     AHT20_init();
-    printf("AHT20 initialized\n\n");
+    uart_print("AHT20 initialized\n\n");
 
     float temperature;
     float humidity;
+    
+    // Character arrays to store the converted float strings
+    char temp_str[10];
+    char hum_str[10];
 
-    // Main equivalent loop
+    // Main infinite loop
     while (1) {
         AHT20_start_measurement();
         AHT20_read_data(&temperature, &humidity);
 
-        // Printing floats directly (Requires build_flags in platformio.ini)
-        printf("Temperature: %.2f C\n", temperature);
-        printf("Humidity: %.2f %%\n", humidity);
-        printf("----------------------------\n");
+        // Convert float values to strings (min width 5, 2 decimal places)
+        dtostrf(temperature, 5, 2, temp_str);
+        dtostrf(humidity, 5, 2, hum_str);
+
+        // Print components manually
+        uart_print("Temperature: ");
+        uart_print(temp_str);
+        uart_print(" C\n");
+
+        uart_print("Humidity: ");
+        uart_print(hum_str);
+        uart_print(" %\n");
+
+        uart_print("----------------------------\n");
 
         _delay_ms(1000);
     }
