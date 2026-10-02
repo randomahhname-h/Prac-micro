@@ -6,15 +6,7 @@
 #define SERVO_MAX_PULSE  5000
 // LED1-LED4 -> PB2-PB5
 #define LED1 PB2
-#define LED2 PB3
-#define LED3 PB4
-#define LED4 PB5
 
-// LED5-LED8 -> PD1-PD4
-#define LED5 PD1
-#define LED6 PD2
-#define LED7 PD3
-#define LED8 PD4
 
 // ======================================================
 // TIMER1 / SERVO INITIALIZATION
