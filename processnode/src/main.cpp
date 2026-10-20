@@ -1,0 +1,324 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <mcp_can.h>
+#include <avr/io.h>
+#include <stdint.h>
+
+// ==================== CAN ====================
+#define CAN_CS 10
+MCP_CAN CAN0(CAN_CS);
+
+#define CAN_ID_TEMP   0x100
+#define CAN_ID_POWER  0x200
+
+#define CAN_BITRATE   CAN_500KBPS
+#define CAN_CLOCK     MCP_8MHZ
+
+// ==================== GPIO: ATmega328P/PB ====================
+// D3 = PD3: Buzzer
+// D4 = PD4: RGB Red
+// D5 = PD5: RGB Green
+// D6 = PD6: RGB Blue
+// D8 = PB0: Mute button, active-low
+
+#define BUZZER_BIT  PD3
+#define RED_BIT     PD4
+#define GREEN_BIT   PD5
+#define BLUE_BIT    PD6
+
+#define MUTE_BIT    PB0
+
+// ==================== THRESHOLDS ====================
+const int16_t TEMP_WARNING_X10 = 300;  // 30.0 C
+const int16_t TEMP_CRITICAL_X10 = 600; // 60.0 C
+
+const int16_t CURRENT_LIMIT_MA = 800;
+const uint16_t VOLTAGE_MIN_MV = 4000;
+const uint16_t VOLTAGE_MAX_MV = 15000;
+
+// Calibration offset applied to the voltage received from the INA node.
+const int16_t VOLTAGE_OFFSET_MV = -100;
+
+const unsigned long DATA_TIMEOUT_MS = 2000;
+const unsigned long PRINT_INTERVAL_MS = 1000;
+
+// ==================== RECEIVED DATA ====================
+int16_t temp1_x10 = 0;
+int16_t temp2_x10 = 0;
+uint8_t thermistorFaultMask = 0x03;  // bit0=NTC1 fault, bit1=NTC2 fault
+
+uint16_t voltage_mV = 0;
+int16_t current_mA = 0;
+int16_t power_mW = 0;
+
+unsigned long lastTempRx = 0;
+unsigned long lastPowerRx = 0;
+unsigned long lastPrint = 0;
+
+bool tempDataReceived = false;
+bool powerDataReceived = false;
+
+bool buzzerMuted = false;
+bool previousMutePressed = false;
+
+// ==================== GPIO HELPERS ====================
+void gpio_init() {
+    // D3-D6 outputs: buzzer and RGB LED only.
+    DDRD |= (1 << BUZZER_BIT) |
+            (1 << RED_BIT) |
+            (1 << GREEN_BIT) |
+            (1 << BLUE_BIT);
+
+    // D8 input with internal pull-up for the active-low mute button.
+    DDRB &= ~(1 << MUTE_BIT);
+    PORTB |= (1 << MUTE_BIT);
+
+    // Initialize buzzer and RGB outputs LOW.
+    PORTD &= ~((1 << BUZZER_BIT) |
+              (1 << RED_BIT) |
+              (1 << GREEN_BIT) |
+              (1 << BLUE_BIT));
+}
+
+void set_rgb(bool red, bool green, bool blue) {
+    if (red)   PORTD |=  (1 << RED_BIT);
+    else       PORTD &= ~(1 << RED_BIT);
+
+    if (green) PORTD |=  (1 << GREEN_BIT);
+    else       PORTD &= ~(1 << GREEN_BIT);
+
+    if (blue)  PORTD |=  (1 << BLUE_BIT);
+    else       PORTD &= ~(1 << BLUE_BIT);
+}
+
+void set_buzzer(bool enabled) {
+    if (enabled) PORTD |=  (1 << BUZZER_BIT);
+    else         PORTD &= ~(1 << BUZZER_BIT);
+}
+
+// ==================== CAN DATA HELPERS ====================
+int16_t read_i16_be(const byte *data) {
+    uint16_t value = ((uint16_t)data[0] << 8) | data[1];
+    return (int16_t)value;
+}
+
+uint16_t read_u16_be(const byte *data) {
+    return ((uint16_t)data[0] << 8) | data[1];
+}
+
+void receive_can_data() {
+    if (CAN0.checkReceive() != CAN_MSGAVAIL) {
+        return;
+    }
+
+    unsigned long rxId = 0;
+    byte len = 0;
+    byte data[8] = {0};
+
+    if (CAN0.readMsgBuf(&rxId, &len, data) != CAN_OK) {
+        return;
+    }
+
+    if (rxId == CAN_ID_TEMP && len >= 4) {
+        temp1_x10 = read_i16_be(&data[0]);
+        temp2_x10 = read_i16_be(&data[2]);
+        // Updated sensor node sends byte 4 as a thermistor fault bitmask.
+        // Accept 4-byte legacy frames too, but those cannot report sensor faults.
+        thermistorFaultMask = (len >= 5) ? data[4] : 0;
+
+        lastTempRx = millis();
+        tempDataReceived = true;
+    }
+    else if (rxId == CAN_ID_POWER && len >= 6) {
+        // Apply the calibration offset, clamping at 0 to avoid unsigned underflow.
+        int32_t corrected_mV = (int32_t)read_u16_be(&data[0]) + VOLTAGE_OFFSET_MV;
+        if (corrected_mV < 0) corrected_mV = 0;
+        voltage_mV = (uint16_t)corrected_mV;
+
+        current_mA = read_i16_be(&data[2]);
+        power_mW = read_i16_be(&data[4]);
+
+        lastPowerRx = millis();
+        powerDataReceived = true;
+    }
+}
+
+// ==================== SAFETY LOGIC ====================
+bool data_is_fresh() {
+    unsigned long now = millis();
+
+    return tempDataReceived &&
+           powerDataReceived &&
+           (now - lastTempRx <= DATA_TIMEOUT_MS) &&
+           (now - lastPowerRx <= DATA_TIMEOUT_MS);
+}
+
+bool warning_condition() {
+    return tempDataReceived &&
+           (temp1_x10 >= TEMP_WARNING_X10 ||
+            temp2_x10 >= TEMP_WARNING_X10);
+}
+
+bool critical_condition() {
+    if (!data_is_fresh()) {
+        return true;
+    }
+
+    if (thermistorFaultMask != 0) {
+        return true;  // An open/shorted thermistor is a critical measurement fault.
+    }
+
+    if (temp1_x10 >= TEMP_CRITICAL_X10 ||
+        temp2_x10 >= TEMP_CRITICAL_X10) {
+        return true;
+    }
+
+    if (current_mA > CURRENT_LIMIT_MA ||
+        current_mA < -CURRENT_LIMIT_MA) {
+        return true;
+    }
+
+    if (voltage_mV < VOLTAGE_MIN_MV ||
+        voltage_mV > VOLTAGE_MAX_MV) {
+        return true;
+    }
+
+    return false;
+}
+
+void handle_buttons() {
+    bool mutePressed = !(PINB & (1 << MUTE_BIT));
+
+    // Toggle mute on each new button press.
+    if (mutePressed && !previousMutePressed) {
+        buzzerMuted = !buzzerMuted;
+        Serial.println(buzzerMuted
+            ? F("[BUTTON] Buzzer muted")
+            : F("[BUTTON] Buzzer unmuted"));
+    }
+
+    previousMutePressed = mutePressed;
+}
+
+void update_outputs() {
+    bool warning = warning_condition();
+    bool critical = critical_condition();
+
+    // Red = critical; blue = warning; green = normal.
+    if (critical) {
+        set_rgb(true, false, false);
+    }
+    else if (warning) {
+        set_rgb(false, false, true);
+    }
+    else {
+        set_rgb(false, true, false);
+    }
+
+    set_buzzer((critical || warning) && !buzzerMuted);
+}
+
+// ==================== SERIAL MONITOR ====================
+void print_temperature(const __FlashStringHelper *label,
+                       int16_t value_x10) {
+    Serial.print(label);
+    Serial.print(value_x10 / 10);
+    Serial.print('.');
+    int16_t fraction = value_x10 % 10;
+    if (fraction < 0) fraction = -fraction;
+    Serial.print(fraction);
+    Serial.println(F(" C"));
+}
+
+void print_status() {
+    Serial.println();
+    Serial.println(F("========== BATTERY ECU =========="));
+
+    Serial.print(F("CAN temperature node: "));
+    Serial.println(tempDataReceived ? F("DATA RECEIVED") : F("NO DATA"));
+
+    if (tempDataReceived) {
+        if (thermistorFaultMask & 0x01) Serial.println(F("Temperature 1: SENSOR FAULT"));
+        else print_temperature(F("Temperature 1: "), temp1_x10);
+        if (thermistorFaultMask & 0x02) Serial.println(F("Temperature 2: SENSOR FAULT"));
+        else print_temperature(F("Temperature 2: "), temp2_x10);
+        Serial.print(F("Thermistor fault mask: 0x"));
+        Serial.println(thermistorFaultMask, HEX);
+    }
+
+    Serial.print(F("CAN power node: "));
+    Serial.println(powerDataReceived ? F("DATA RECEIVED") : F("NO DATA"));
+
+    if (powerDataReceived) {
+        Serial.print(F("Voltage: "));
+        Serial.print(voltage_mV / 1000.0, 2);
+        Serial.println(F(" V"));
+
+        Serial.print(F("Current: "));
+        Serial.print(current_mA / 1000.0, 3);
+        Serial.println(F(" A"));
+
+        Serial.print(F("Power: "));
+        Serial.print(power_mW / 1000.0, 2);
+        Serial.println(F(" W"));
+    }
+
+    Serial.print(F("Warning: "));
+    Serial.println(warning_condition() ? F("YES") : F("NO"));
+
+    Serial.print(F("Critical condition: "));
+    Serial.println(critical_condition() ? F("YES") : F("NO"));
+
+    Serial.print(F("Buzzer: "));
+    Serial.println(((critical_condition() || warning_condition()) &&
+                    !buzzerMuted) ? F("ON") : F("OFF"));
+
+    if (!data_is_fresh()) {
+        Serial.println(F("[WARNING] Missing or stale CAN data"));
+    }
+
+    Serial.println(F("================================="));
+}
+
+// ==================== SETUP ====================
+void setup() {
+    gpio_init();
+
+    Serial.begin(115200);
+    SPI.begin();
+
+    // Keep SPI master mode enabled and CS inactive before init
+    pinMode(CAN_CS, OUTPUT);
+    digitalWrite(CAN_CS, HIGH);
+
+    Serial.println();
+    Serial.println(F("Battery Safety ECU starting..."));
+    Serial.println(F("MCP2515 clock: 8 MHz"));
+    Serial.println(F("CAN bitrate: 500 kbps"));
+
+    while (CAN0.begin(MCP_ANY, CAN_BITRATE, CAN_CLOCK) != CAN_OK) {
+        Serial.println(F("[ERROR] MCP2515 init failed. Check SPI, power and clock."));
+        delay(1000);
+    }
+
+    CAN0.setMode(MCP_NORMAL);
+
+    Serial.println(F("[OK] MCP2515 initialized"));
+    Serial.println(F("[OK] CAN normal mode"));
+    Serial.println(F("Waiting for CAN IDs 0x100 and 0x200..."));
+    Serial.println(F("Serial Monitor: 115200 baud"));
+}
+
+// ==================== MAIN LOOP ====================
+void loop() {
+    receive_can_data();
+    handle_buttons();
+    update_outputs();
+
+    unsigned long now = millis();
+
+    if (now - lastPrint >= PRINT_INTERVAL_MS) {
+        lastPrint = now;
+        print_status();
+    }
+}

@@ -4,10 +4,8 @@
 
 #define SERVO_MIN_PULSE  1000
 #define SERVO_MAX_PULSE  5000
-// LED1-LED4 -> PB2-PB5
+
 #define LED1 PB2
-
-
 // ======================================================
 // TIMER1 / SERVO INITIALIZATION
 // ======================================================
@@ -16,7 +14,7 @@ void Led_Init(void)
   DDRB |= (1 << LED1); 
    PORTB &= ~(1 << LED1);
 }
-    
+
 void Servo_Init(void)
 {
     // PB1 = OC1A = Timer1 PWM output
@@ -46,9 +44,8 @@ void Servo_Init(void)
         20 ms period:
         20 ms / 0.5 us = 40000
 
-        TOP = 39999
+      TOP = 39999
     */
-
     ICR1 = 39999;
 }
 
